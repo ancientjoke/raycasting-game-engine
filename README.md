@@ -8,4 +8,3 @@
 - `Q` - Strafe left
 - `E` - Strafe right
 - `R` - Generate new map
-- `Mouse` - Look around (click game window to enable)
