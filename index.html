@@ -48,6 +48,22 @@
     const sinTable = new Array(PRECALC_ANGLES);
     const cosTable = new Array(PRECALC_ANGLES);
 
+    const ENEMY_SIZE = TILE_SIZE * 0.6;
+    const ENEMY_TYPE = {
+        BASIC: 0,
+    };
+
+    const PLAYER_MAX_HEALTH = 100;
+    const ENEMY_DAMAGE = 10;
+    const DAMAGE_COOLDOWN = 1000; 
+
+    const ENEMY_SPEED = 2;
+    const PATH_UPDATE_INTERVAL = 500;
+    const DIAGONAL_COST = 1.414;
+
+    const DEATH_ANIMATION_DURATION = 2000;
+    const DEATH_MESSAGE = 'YOU\'RE DEAD';
+
     for (let i = 0; i < PRECALC_ANGLES; i++) {
     const angle = (i * Math.PI * 2) / PRECALC_ANGLES;
     sinTable[i] = Math.sin(angle);
@@ -61,6 +77,11 @@
     speed: 0,
     lateralSpeed: 0,
     rotationSpeed: 0,
+    health: PLAYER_MAX_HEALTH,
+    lastDamageTime: 0,
+    godMode: true,
+    isDead: false,
+    deathAnimationStart: 0
     };
 
     const keys = {
@@ -80,60 +101,341 @@
         fullScreenGridSize: 0, 
         mouseX: 0,
         mouseY: 0,
-        dragging: false
+        dragging: false,
+        selectedEnemy: ENEMY_TYPE.BASIC,
+        isPlacingEnemy: false,
+        showHealthBar: true,
+        showMinimap: true, 
+        enemiesPaused: false
     };
 
+    const enemies = [];
+
+    class Enemy {
+        constructor(x, y, type) {
+            this.x = x * TILE_SIZE + TILE_SIZE / 2;
+            this.y = y * TILE_SIZE + TILE_SIZE / 2;
+            this.type = type;
+            this.angle = Math.random() * Math.PI * 2;
+            this.path = [];
+            this.lastPathUpdate = 0;
+            this.speed = ENEMY_SPEED;
+        }
+
+        draw(ctx, offsetX = 0, offsetY = 0, scale = 1) {
+            const size = ENEMY_SIZE * scale;
+            ctx.save();
+            ctx.translate(this.x * scale + offsetX, this.y * scale + offsetY);
+            ctx.rotate(this.angle);
+            
+            ctx.beginPath();
+            ctx.moveTo(0, -size/2);
+            ctx.lineTo(-size/2, size/2);
+            ctx.lineTo(size/2, size/2);
+            ctx.closePath();
+            
+            ctx.fillStyle = '#ff0000';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        update(currentTime, worldMap) {
+            if (EDITOR.enemiesPaused || player.godMode) return;
+
+            if (currentTime - this.lastPathUpdate > PATH_UPDATE_INTERVAL) {
+                this.findPathToPlayer(worldMap);
+                this.lastPathUpdate = currentTime;
+            }
+
+            if (this.path.length > 0) {
+                const nextPoint = this.path[0];
+                const targetX = nextPoint[0] * TILE_SIZE + TILE_SIZE / 2;
+                const targetY = nextPoint[1] * TILE_SIZE + TILE_SIZE / 2;
+
+                const dx = targetX - this.x;
+                const dy = targetY - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < this.speed) {
+                    this.path.shift();
+                } else {
+                    this.x += (dx / distance) * this.speed;
+                    this.y += (dy / distance) * this.speed;
+                    this.angle = Math.atan2(dy, dx);
+                }
+            }
+        }
+
+        findPathToPlayer(worldMap) {
+            const startX = Math.floor(this.x / TILE_SIZE);
+            const startY = Math.floor(this.y / TILE_SIZE);
+            const targetX = Math.floor(player.x / TILE_SIZE);
+            const targetY = Math.floor(player.y / TILE_SIZE);
+
+            const openSet = [];
+            const closedSet = new Set();
+            const cameFrom = new Map();
+            const gScore = new Map();
+            const fScore = new Map();
+
+            const start = `${startX},${startY}`;
+            openSet.push(start);
+            gScore.set(start, 0);
+            fScore.set(start, this.heuristic(startX, startY, targetX, targetY));
+
+            while (openSet.length > 0) {
+                let current = this.getLowestFScore(openSet, fScore);
+                const [currentX, currentY] = current.split(',').map(Number);
+
+                if (currentX === targetX && currentY === targetY) {
+                    this.path = this.reconstructPath(cameFrom, current);
+                    return;
+                }
+
+                openSet.splice(openSet.indexOf(current), 1);
+                closedSet.add(current);
+
+                const neighbors = this.getNeighbors(currentX, currentY, worldMap);
+                for (const neighbor of neighbors) {
+                    const [nx, ny] = neighbor;
+                    const neighborKey = `${nx},${ny}`;
+
+                    if (closedSet.has(neighborKey)) continue;
+
+                    const tentativeGScore = gScore.get(current) + 
+                        ((nx - currentX === 0 || ny - currentY === 0) ? 1 : DIAGONAL_COST);
+
+                    if (!openSet.includes(neighborKey)) {
+                        openSet.push(neighborKey);
+                    } else if (tentativeGScore >= gScore.get(neighborKey)) {
+                        continue;
+                    }
+
+                    cameFrom.set(neighborKey, current);
+                    gScore.set(neighborKey, tentativeGScore);
+                    fScore.set(neighborKey, tentativeGScore + 
+                        this.heuristic(nx, ny, targetX, targetY));
+                }
+            }
+
+            this.path = []; 
+        }
+
+        heuristic(x1, y1, x2, y2) {
+            return Math.abs(x1 - x2) + Math.abs(y1 - y2);
+        }
+
+        getLowestFScore(openSet, fScore) {
+            return openSet.reduce((lowest, current) => 
+                !lowest || fScore.get(current) < fScore.get(lowest) ? current : lowest);
+        }
+
+        getNeighbors(x, y, worldMap) {
+            const neighbors = [];
+            const directions = [
+                [-1,-1], [0,-1], [1,-1],
+                [-1, 0],         [1, 0],
+                [-1, 1], [0, 1], [1, 1]
+            ];
+
+            for (const [dx, dy] of directions) {
+                const newX = x + dx;
+                const newY = y + dy;
+                
+                if (newX >= 0 && newX < MAP_WIDTH && 
+                    newY >= 0 && newY < MAP_HEIGHT && 
+                    worldMap[newY][newX] === 0) {
+                    neighbors.push([newX, newY]);
+                }
+            }
+            return neighbors;
+        }
+
+        reconstructPath(cameFrom, current) {
+            const path = [];
+            while (cameFrom.has(current)) {
+                const [x, y] = current.split(',').map(Number);
+                path.unshift([x, y]);
+                current = cameFrom.get(current);
+            }
+            return path;
+        }
+    }
+
+    function isEnemyAtTile(gridX, gridY) {
+        return enemies.some(enemy => {
+            const enemyGridX = Math.floor(enemy.x / TILE_SIZE);
+            const enemyGridY = Math.floor(enemy.y / TILE_SIZE);
+            return enemyGridX === gridX && enemyGridY === gridY;
+        });
+    }
+
     function generateMap() {
-    let map = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(1));
-    const rooms = [];
-    const maxRooms = 15;
-    const minRoomSize = 3;
-    const maxRoomSize = 8;
+        let map = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(1));
+        const rooms = [];
+        const minRooms = 8;
+        const maxRooms = 15;
+        const minRoomSize = 4;
+        const maxRoomSize = 8;
+        const numRooms = Math.floor(Math.random() * (maxRooms - minRooms + 1)) + minRooms;
 
-    for (let i = 0; i < maxRooms; i++) {
-    const roomWidth = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
-    const roomHeight = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
-    const x = Math.floor(Math.random() * (MAP_WIDTH - roomWidth - 2)) + 1;
-    const y = Math.floor(Math.random() * (MAP_HEIGHT - roomHeight - 2)) + 1;
+        function createRoom(attempts = 0) {
+            if (attempts > 50) return null;
+            
+            const roomWidth = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
+            const roomHeight = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
+            const x = Math.floor(Math.random() * (MAP_WIDTH - roomWidth - 2)) + 1;
+            const y = Math.floor(Math.random() * (MAP_HEIGHT - roomHeight - 2)) + 1;
+            
+            const room = {
+                x, y,
+                width: roomWidth,
+                height: roomHeight,
+                center: [x + Math.floor(roomWidth/2), y + Math.floor(roomHeight/2)]
+            };
 
-    const newRoom = {x, y, width: roomWidth, height: roomHeight};
+            for (const otherRoom of rooms) {
+                if (checkRoomOverlap(room, otherRoom)) {
+                    return createRoom(attempts + 1);
+                }
+            }
 
-    let failed = false;
-    for (const otherRoom of rooms) {
-        if (checkRoomOverlap(newRoom, otherRoom)) {
-            failed = true;
-            break;
+            return room;
+        }
+
+        function createMaze(x, y) {
+            const directions = [
+                [0, -2], [2, 0], [0, 2], [-2, 0]
+            ].sort(() => Math.random() - 0.5);
+
+            for (const [dx, dy] of directions) {
+                const newX = x + dx;
+                const newY = y + dy;
+
+                if (newX > 0 && newX < MAP_WIDTH - 1 && newY > 0 && newY < MAP_HEIGHT - 1
+                    && map[newY][newX] === 1) {
+                    map[newY][newX] = 0;
+                    map[y + dy/2][x + dx/2] = 0;
+                    createMaze(newX, newY);
+                }
+            }
+        }
+
+        for (let i = 0; i < numRooms; i++) {
+            const room = createRoom();
+            if (room) {
+                rooms.push(room);
+                carveRoom(map, room);
+            }
+        }
+
+        rooms.sort((a, b) => {
+            const distA = a.center[0] * a.center[0] + a.center[1] * a.center[1];
+            const distB = b.center[0] * b.center[0] + b.center[1] * b.center[1];
+            return distA - distB;
+        });
+
+        for (let i = 0; i < rooms.length - 1; i++) {
+            const roomA = rooms[i];
+            const roomB = rooms[i + 1];
+            carveCorridor(map, roomA.center[0], roomA.center[1], roomB.center[0], roomB.center[1]);
+        }
+
+        const mazeStartPoints = [];
+        for (let y = 2; y < MAP_HEIGHT - 2; y += 2) {
+            for (let x = 2; x < MAP_WIDTH - 2; x += 2) {
+                if (map[y][x] === 1 && Math.random() < 0.1) {
+                    mazeStartPoints.push([x, y]);
+                }
+            }
+        }
+
+        mazeStartPoints.forEach(([x, y]) => {
+            if (map[y][x] === 1) {
+                map[y][x] = 0;
+                createMaze(x, y);
+            }
+        });
+
+        addDecorations(map);
+        addSecretPassages(map);
+        validateMap(map);
+
+        const startRoom = rooms[0];
+        const [startX, startY] = startRoom.center;
+
+        return {
+            map,
+            startX,
+            startY,
+            rooms
+        };
+    }
+
+    function addDecorations(map) {
+        for (let y = 1; y < MAP_HEIGHT - 1; y++) {
+            for (let x = 1; x < MAP_WIDTH - 1; x++) {
+                if (map[y][x] === 0 && Math.random() < 0.05) {
+                    let wallCount = 0;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            if (map[y + dy][x + dx] === 1) wallCount++;
+                        }
+                    }
+                    if (wallCount >= 5) map[y][x] = 1;
+                }
+            }
         }
     }
 
-    if (!failed) {
-        carveRoom(map, newRoom);
-        if (rooms.length > 0) {
-            const [newX, newY] = getRoomCenter(newRoom);
-            const [prevX, prevY] = getRoomCenter(rooms[rooms.length - 1]);
-            carveCorridor(map, prevX, prevY, newX, newY);
+    function addSecretPassages(map) {
+        for (let y = 1; y < MAP_HEIGHT - 1; y++) {
+            for (let x = 1; x < MAP_WIDTH - 1; x++) {
+                if (map[y][x] === 1 && Math.random() < 0.02) {
+                    let openSpace = 0;
+                    for (let dy = -1; dy <= 1; dy++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            if (map[y + dy][x + dx] === 0) openSpace++;
+                        }
+                    }
+                    if (openSpace >= 2) map[y][x] = 0;
+                }
+            }
         }
-        rooms.push(newRoom);
-    }
     }
 
-    for (let y = 0; y < MAP_HEIGHT; y++) {
-    map[y][0] = 1;
-    map[y][MAP_WIDTH - 1] = 1;
-    }
-    for (let x = 0; x < MAP_WIDTH; x++) {
-    map[0][x] = 1;
-    map[MAP_HEIGHT - 1][x] = 1;
+    function validateMap(map) {
+        const visited = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(false));
+        let startFound = false;
+        
+        for (let y = 0; y < MAP_HEIGHT && !startFound; y++) {
+            for (let x = 0; x < MAP_WIDTH && !startFound; x++) {
+                if (map[y][x] === 0) {
+                    floodFill(map, visited, x, y);
+                    startFound = true;
+                }
+            }
+        }
+
+        for (let y = 0; y < MAP_HEIGHT; y++) {
+            for (let x = 0; x < MAP_WIDTH; x++) {
+                if (map[y][x] === 0 && !visited[y][x]) {
+                    map[y][x] = 1;
+                }
+            }
+        }
     }
 
-    const startRoom = rooms[0];
-    const [startX, startY] = getRoomCenter(startRoom);
-    map[startY][startX] = 0;
-    map[startY + 1][startX] = 0;
-    map[startY][startX + 1] = 0;
-    map[startY + 1][startX + 1] = 0;
-
-    return {map, startX, startY};
+    function floodFill(map, visited, x, y) {
+        if (x < 0 || x >= MAP_WIDTH || y < 0 || y >= MAP_HEIGHT || 
+            visited[y][x] || map[y][x] === 1) return;
+        
+        visited[y][x] = true;
+        
+        floodFill(map, visited, x + 1, y);
+        floodFill(map, visited, x - 1, y);
+        floodFill(map, visited, x, y + 1);
+        floodFill(map, visited, x, y - 1);
     }
 
     function checkRoomOverlap(room1, room2) {
@@ -180,7 +482,7 @@
 
     const {map: worldMap, startX, startY} = generateMap();
     player.x = startX * TILE_SIZE + TILE_SIZE / 2;
-    player.y = startY * TILE_SIZE + TILE_SIZE / 2;
+    player.y = startY * TILE_SIZE / 2;
 
     function raycast() {
     const depthBuffer = new Array(NUM_RAYS);
@@ -219,6 +521,34 @@
     }
     
     return depthBuffer;
+    }
+
+    function renderEnemies(depthBuffer) {
+        enemies.forEach(enemy => {
+            const dx = enemy.x - player.x;
+            const dy = enemy.y - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            const angle = Math.atan2(dy, dx);
+            const relativeAngle = (angle - player.angle + Math.PI * 2) % (Math.PI * 2);
+            
+            if (relativeAngle < FOV/2 || relativeAngle > Math.PI * 2 - FOV/2) {
+                const projectedHeight = (TILE_SIZE * DIST_TO_PROJ) / distance;
+                const screenX = Math.tan(relativeAngle) * DIST_TO_PROJ + canvas.width/2;
+                const screenY = (canvas.height - projectedHeight) / 2;
+                
+                if (distance < depthBuffer[Math.floor(screenX)]) {
+                    const width = projectedHeight * 0.6;
+                    ctx.fillStyle = '#ff0000';
+                    ctx.beginPath();
+                    ctx.moveTo(screenX, screenY);
+                    ctx.lineTo(screenX - width/2, screenY + projectedHeight);
+                    ctx.lineTo(screenX + width/2, screenY + projectedHeight);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            }
+        });
     }
 
     function drawLevelDesigner() {
@@ -281,6 +611,25 @@
         ctx.fillRect(toolbarX, 110, 80, 40);
         ctx.fillStyle = '#fff';
         ctx.fillText(`Brush: ${EDITOR.brushSize}`, toolbarX + 10, 135);
+
+        ctx.fillStyle = EDITOR.isPlacingEnemy ? '#666' : '#444';
+        ctx.fillRect(toolbarX, 160, 80, 40);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('Enemy (3)', toolbarX + 10, 185);
+
+        ctx.fillStyle = '#444';
+        ctx.fillRect(toolbarX, 210, 80, 40);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(player.godMode ? 'God Mode (G)' : 'Survival (G)', toolbarX + 10, 235);
+
+        ctx.fillStyle = '#444';
+        ctx.fillRect(toolbarX, 260, 80, 40);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(EDITOR.showMinimap ? 'Hide Map (M)' : 'Show Map (M)', toolbarX + 10, 285);
+        
+        enemies.forEach(enemy => {
+            enemy.draw(ctx, offsetX, offsetY, EDITOR.gridSize / TILE_SIZE);
+        });
     }
 
     function castHorizontal(rayAngle, sinA, cosA) {
@@ -415,6 +764,66 @@
     }
     }
 
+    function drawHealthBar() {
+        if (!player.godMode) {
+            const barWidth = canvas.width * 0.3;
+            const barHeight = 20;
+            const x = 10;
+            const y = canvas.height - barHeight - 10;
+
+            ctx.fillStyle = '#333';
+            ctx.fillRect(x, y, barWidth, barHeight);
+
+            const healthPercent = player.health / PLAYER_MAX_HEALTH;
+            ctx.fillStyle = `rgb(${255 * (1 - healthPercent)}, ${255 * healthPercent}, 0)`;
+            ctx.fillRect(x, y, barWidth * healthPercent, barHeight);
+
+            ctx.strokeStyle = '#fff';
+            ctx.strokeRect(x, y, barWidth, barHeight);
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Arial';
+            ctx.fillText(`Health: ${Math.ceil(player.health)}`, x + 5, y + 15);
+        } else {
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px Arial';
+            ctx.fillText('GOD MODE', 10, canvas.height - 15);
+        }
+    }
+
+    function drawDeathScreen(currentTime) {
+        if (!player.isDead) return;
+        
+        const elapsed = currentTime - player.deathAnimationStart;
+        const progress = Math.min(elapsed / DEATH_ANIMATION_DURATION, 1);
+        
+        const maxHeight = canvas.height * 2;
+        const maxWidth = canvas.width * 0.15;
+        const currentHeight = maxHeight * progress;
+        const currentWidth = maxWidth * progress;
+        
+        const startAngle = -Math.PI / 4;
+        const endAngle = Math.PI / 2;
+        const rotation = startAngle + (endAngle - startAngle) * progress;
+        
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.rotate(rotation);
+        ctx.fillStyle = 'black';
+        ctx.fillRect(-currentWidth / 2, -currentHeight / 2, currentWidth, currentHeight);
+        
+        if (progress > 0.5) {
+            const textOpacity = (progress - 0.5) * 2;
+            ctx.rotate(-rotation);
+            ctx.fillStyle = `rgba(255, 0, 0, ${textOpacity})`;
+            ctx.font = 'bold 48px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(DEATH_MESSAGE, 0, 0);
+        }
+        ctx.restore();
+    }
+
     function update() {
     if (player.speed !== 0 || player.lateralSpeed !== 0) {
     const moveAngle = player.angle + (player.lateralSpeed !== 0 ? Math.PI/2 : 0);
@@ -460,22 +869,33 @@
     let lastTime = performance.now();
 
     function gameLoop(currentTime) {
-    const deltaTime = currentTime - lastTime;
-
-    if (deltaTime >= FRAME_TIME) {
-        if (EDITOR.active) {
-            drawLevelDesigner();
-        } else {
-            updateMovement();
-            update();
-
-            const depthBuffer = raycast();
-            drawMinimap(depthBuffer);
+        const deltaTime = currentTime - lastTime;
+        
+        if (deltaTime >= FRAME_TIME) {
+            if (EDITOR.active) {
+                drawLevelDesigner();
+            } else {
+                if (!player.isDead) {
+                    updateMovement();
+                    update();
+                    updateEnemies(currentTime);
+                }
+                
+                const depthBuffer = raycast();
+                renderEnemies(depthBuffer);
+                if (EDITOR.showMinimap) {
+                    drawMinimap(depthBuffer);
+                }
+                drawHealthBar();
+                
+                if (player.isDead) {
+                    drawDeathScreen(currentTime);
+                }
+            }
+            lastTime = currentTime;
         }
-        lastTime = currentTime;
-    }
-
-    requestAnimationFrame(gameLoop);
+        
+        requestAnimationFrame(gameLoop);
     }
 
     function handleResize() {
@@ -500,61 +920,140 @@
     if (keys.right) player.rotationSpeed = ROTATION_SPEED;
     }
 
-    function handleKeyDown(e) {
-    switch(e.key.toLowerCase()) {
-    case 'w': case 'arrowup': keys.up = true; break;
-    case 's': case 'arrowdown': keys.down = true; break;
-    case 'a': case 'arrowleft': keys.left = true; break;
-    case 'd': case 'arrowright': keys.right = true; break;
-    case 'q': keys.strafeLeft = true; break;
-    case 'e': keys.strafeRight = true; break;
-    case 'r': 
-        const {map: newMap, startX, startY} = generateMap();
-        for(let y = 0; y < MAP_HEIGHT; y++) {
-            for(let x = 0; x < MAP_WIDTH; x++) {
-                worldMap[y][x] = newMap[y][x];
+    function updateEnemies(currentTime) {
+        if (player.godMode || player.isDead) return;
+
+        enemies.forEach(enemy => {
+            enemy.update(currentTime, worldMap);
+            
+            const dx = player.x - enemy.x;
+            const dy = player.y - enemy.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance < TILE_SIZE * 1.5 && currentTime - player.lastDamageTime > DAMAGE_COOLDOWN) {
+                player.health = Math.max(0, player.health - ENEMY_DAMAGE);
+                player.lastDamageTime = currentTime;
+                
+                if (player.health <= 0 && !player.isDead) {
+                    player.isDead = true;
+                    player.deathAnimationStart = currentTime;
+                    EDITOR.enemiesPaused = true; 
+                }
             }
-        }
-        player.x = startX * TILE_SIZE + TILE_SIZE/2;
-        player.y = startY * TILE_SIZE + TILE_SIZE/2;
-        break;
-    case 'tab':
-        e.preventDefault();
-        EDITOR.active = !EDITOR.active;
-        break;
-    case '1':
-        if (EDITOR.active) EDITOR.selectedTile = 1;
-        break;
-    case '2':
-        if (EDITOR.active) EDITOR.selectedTile = 0;
-        break;
-    case '[':
-        if (EDITOR.active) EDITOR.brushSize = Math.max(1, EDITOR.brushSize - 1);
-        break;
-    case ']':
-        if (EDITOR.active) EDITOR.brushSize = Math.min(5, EDITOR.brushSize + 1);
-        break;
-    case 's':
-        if (EDITOR.active) {
-            localStorage.setItem('customMap', JSON.stringify(worldMap));
-            alert('Map saved!');
-        }
-        break;
-    case 'l':
-        if (EDITOR.active) {
-            const savedMap = localStorage.getItem('customMap');
-            if (savedMap) {
-                const loadedMap = JSON.parse(savedMap);
+        });
+    }
+
+    function handleKeyDown(e) {
+        switch(e.key.toLowerCase()) {
+            case 'w': case 'arrowup': keys.up = true; break;
+            case 's': case 'arrowdown': keys.down = true; break;
+            case 'a': case 'arrowleft': keys.left = true; break;
+            case 'd': case 'arrowright': keys.right = true; break;
+            case 'q': keys.strafeLeft = true; break;
+            case 'e': keys.strafeRight = true; break;
+            case 'r':
+                if (player.isDead) {
+                    player.isDead = false;
+                    player.health = PLAYER_MAX_HEALTH;
+                    EDITOR.enemiesPaused = false;
+                }
+                const {map: newMap, startX, startY} = generateMap();
                 for(let y = 0; y < MAP_HEIGHT; y++) {
                     for(let x = 0; x < MAP_WIDTH; x++) {
-                        worldMap[y][x] = loadedMap[y][x];
+                        worldMap[y][x] = newMap[y][x];
                     }
                 }
-                alert('Map loaded!');
-            }
+                player.x = startX * TILE_SIZE + TILE_SIZE/2;
+                player.y = startY * TILE_SIZE/2;
+                break;
+            case 'tab':
+                e.preventDefault();
+                EDITOR.active = !EDITOR.active;
+                break;
+            case '1':
+                if (EDITOR.active) {
+                    EDITOR.selectedTile = 1;
+                    EDITOR.isPlacingEnemy = false;
+                }
+                break;
+            case '2':
+                if (EDITOR.active) {
+                    EDITOR.selectedTile = 0;
+                    EDITOR.isPlacingEnemy = false;
+                }
+                break;
+            case '3':
+                if (EDITOR.active) {
+                    EDITOR.isPlacingEnemy = !EDITOR.isPlacingEnemy;
+                    EDITOR.selectedTile = null;
+                }
+                break;
+            case '[':
+                if (EDITOR.active) EDITOR.brushSize = Math.max(1, EDITOR.brushSize - 1);
+                break;
+            case ']':
+                if (EDITOR.active) EDITOR.brushSize = Math.min(5, EDITOR.brushSize + 1);
+                break;
+            case 's':
+                if (EDITOR.active) {
+                    const saveData = {
+                        map: worldMap,
+                        enemies: enemies.map(e => ({x: e.x, y: e.y, type: e.type, angle: e.angle}))
+                    };
+                    localStorage.setItem('customMap', JSON.stringify(saveData));
+                    alert('Map saved!');
+                }
+                break;
+            case 'l':
+                if (EDITOR.active) {
+                    const savedData = localStorage.getItem('customMap');
+                    if (savedData) {
+                        const loadedData = JSON.parse(savedData);
+                        for(let y = 0; y < MAP_HEIGHT; y++) {
+                            for(let x = 0; x < MAP_WIDTH; x++) {
+                                worldMap[y][x] = loadedData.map[y][x];
+                            }
+                        }
+                        enemies.length = 0;
+                        loadedData.enemies?.forEach(e => {
+                            enemies.push(new Enemy(Math.floor(e.x/TILE_SIZE), Math.floor(e.y/TILE_SIZE), e.type));
+                        });
+                        alert('Map loaded!');
+                    }
+                }
+                break;
+            case 'delete':
+                if (EDITOR.active && EDITOR.mouseX && EDITOR.mouseY) {
+                    const offsetX = (canvas.width - (MAP_WIDTH * EDITOR.gridSize)) / 2;
+                    const offsetY = (canvas.height - (MAP_HEIGHT * EDITOR.gridSize)) / 2;
+                    const gridX = Math.floor((EDITOR.mouseX - offsetX) / EDITOR.gridSize);
+                    const gridY = Math.floor((EDITOR.mouseY - offsetY) / EDITOR.gridSize);
+                    
+                    const clickRadius = ENEMY_SIZE / 2;
+                    enemies.forEach((enemy, index) => {
+                        const enemyGridX = Math.floor(enemy.x / TILE_SIZE);
+                        const enemyGridY = Math.floor(enemy.y / TILE_SIZE);
+                        if (enemyGridX === gridX && enemyGridY === gridY) {
+                            enemies.splice(index, 1);
+                        }
+                    });
+                }
+                break;
+            case 'g':
+                if (!EDITOR.active) {
+                    player.godMode = !player.godMode;
+                    if (player.godMode) {
+                        player.health = PLAYER_MAX_HEALTH;
+                    }
+                }
+                break;
+            case 'm':
+                EDITOR.showMinimap = !EDITOR.showMinimap;
+                break;
+            case ' ':
+                EDITOR.enemiesPaused = !EDITOR.enemiesPaused;
+                break;
         }
-        break;
-    }
     }
 
     function handleKeyUp(e) {
@@ -599,13 +1098,29 @@
         const gridY = Math.floor((e.offsetY - offsetY) / EDITOR.gridSize);
         
         if (gridX < 0 || gridX >= MAP_WIDTH || gridY < 0 || gridY >= MAP_HEIGHT) return;
-        
-        for(let dy = -EDITOR.brushSize + 1; dy < EDITOR.brushSize; dy++) {
-            for(let dx = -EDITOR.brushSize + 1; dx < EDITOR.brushSize; dx++) {
-                const x = gridX + dx;
-                const y = gridY + dy;
-                if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
-                    worldMap[y][x] = EDITOR.selectedTile;
+
+        if (EDITOR.isPlacingEnemy) {
+            if (worldMap[gridY][gridX] === 0 && !isEnemyAtTile(gridX, gridY)) {
+                enemies.push(new Enemy(gridX, gridY, EDITOR.selectedEnemy));
+            }
+        } else {
+            for(let dy = -EDITOR.brushSize + 1; dy < EDITOR.brushSize; dy++) {
+                for(let dx = -EDITOR.brushSize + 1; dx < EDITOR.brushSize; dx++) {
+                    const x = gridX + dx;
+                    const y = gridY + dy;
+                    if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+                        worldMap[y][x] = EDITOR.selectedTile;
+                        
+                        if (EDITOR.selectedTile === 0) {
+                            enemies.forEach((enemy, index) => {
+                                const enemyGridX = Math.floor(enemy.x / TILE_SIZE);
+                                const enemyGridY = Math.floor(enemy.y / TILE_SIZE);
+                                if (enemyGridX === x && enemyGridY === y) {
+                                    enemies.splice(index, 1);
+                                }
+                            });
+                        }
+                    }
                 }
             }
         }
