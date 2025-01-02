@@ -25,7 +25,7 @@
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d', { alpha: false });
 
-    canvas.width = window.innerWidth * 0.8; // adjust window sizes to fit the game
+    canvas.width = window.innerWidth * 0.6; // adjust window sizes to fit the game
     canvas.height = window.innerHeight * 0.8; 
 
     const TILE_SIZE = 64;
@@ -70,6 +70,17 @@
     right: false,
     strafeLeft: false,
     strafeRight: false
+    };
+
+    const EDITOR = {
+        active: false,
+        selectedTile: 1,
+        brushSize: 1,
+        gridSize: TILE_SIZE * 0.2,
+        fullScreenGridSize: 0, 
+        mouseX: 0,
+        mouseY: 0,
+        dragging: false
     };
 
     function generateMap() {
@@ -208,6 +219,68 @@
     }
     
     return depthBuffer;
+    }
+
+    function drawLevelDesigner() {
+        const gridSizeX = canvas.width / MAP_WIDTH;
+        const gridSizeY = canvas.height / MAP_HEIGHT;
+        EDITOR.gridSize = Math.min(gridSizeX, gridSizeY);
+        
+        const offsetX = (canvas.width - (MAP_WIDTH * EDITOR.gridSize)) / 2;
+        const offsetY = (canvas.height - (MAP_HEIGHT * EDITOR.gridSize)) / 2;
+        
+        ctx.fillStyle = '#222';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.strokeStyle = '#444';
+        ctx.lineWidth = 1;
+        for(let x = 0; x <= MAP_WIDTH; x++) {
+            ctx.beginPath();
+            ctx.moveTo(offsetX + x * EDITOR.gridSize, offsetY);
+            ctx.lineTo(offsetX + x * EDITOR.gridSize, offsetY + MAP_HEIGHT * EDITOR.gridSize);
+            ctx.stroke();
+        }
+        for(let y = 0; y <= MAP_HEIGHT; y++) {
+            ctx.beginPath();
+            ctx.moveTo(offsetX, offsetY + y * EDITOR.gridSize);
+            ctx.lineTo(offsetX + MAP_WIDTH * EDITOR.gridSize, offsetY + y * EDITOR.gridSize);
+            ctx.stroke();
+        }
+        
+        for(let y = 0; y < MAP_HEIGHT; y++) {
+            for(let x = 0; x < MAP_WIDTH; x++) {
+                if(worldMap[y][x] === 1) {
+                    ctx.fillStyle = '#666';
+                    ctx.fillRect(
+                        offsetX + x * EDITOR.gridSize, 
+                        offsetY + y * EDITOR.gridSize, 
+                        EDITOR.gridSize, 
+                        EDITOR.gridSize
+                    );
+                }
+            }
+        }
+        
+        ctx.fillStyle = '#333';
+        ctx.fillRect(canvas.width - 100, 0, 100, canvas.height);
+        
+        const toolbarX = canvas.width - 90;
+        
+        ctx.fillStyle = EDITOR.selectedTile === 1 ? '#666' : '#444';
+        ctx.fillRect(toolbarX, 10, 80, 40);
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px Arial';
+        ctx.fillText('Wall (1)', toolbarX + 10, 35);
+        
+        ctx.fillStyle = EDITOR.selectedTile === 0 ? '#666' : '#444';
+        ctx.fillRect(toolbarX, 60, 80, 40);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('Empty (2)', toolbarX + 10, 85);
+        
+        ctx.fillStyle = '#444';
+        ctx.fillRect(toolbarX, 110, 80, 40);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(`Brush: ${EDITOR.brushSize}`, toolbarX + 10, 135);
     }
 
     function castHorizontal(rayAngle, sinA, cosA) {
@@ -390,13 +463,16 @@
     const deltaTime = currentTime - lastTime;
 
     if (deltaTime >= FRAME_TIME) {
-    updateMovement();
-    update();
+        if (EDITOR.active) {
+            drawLevelDesigner();
+        } else {
+            updateMovement();
+            update();
 
-    const depthBuffer = raycast();
-    drawMinimap(depthBuffer);
-
-    lastTime = currentTime;
+            const depthBuffer = raycast();
+            drawMinimap(depthBuffer);
+        }
+        lastTime = currentTime;
     }
 
     requestAnimationFrame(gameLoop);
@@ -442,6 +518,42 @@
         player.x = startX * TILE_SIZE + TILE_SIZE/2;
         player.y = startY * TILE_SIZE + TILE_SIZE/2;
         break;
+    case 'tab':
+        e.preventDefault();
+        EDITOR.active = !EDITOR.active;
+        break;
+    case '1':
+        if (EDITOR.active) EDITOR.selectedTile = 1;
+        break;
+    case '2':
+        if (EDITOR.active) EDITOR.selectedTile = 0;
+        break;
+    case '[':
+        if (EDITOR.active) EDITOR.brushSize = Math.max(1, EDITOR.brushSize - 1);
+        break;
+    case ']':
+        if (EDITOR.active) EDITOR.brushSize = Math.min(5, EDITOR.brushSize + 1);
+        break;
+    case 's':
+        if (EDITOR.active) {
+            localStorage.setItem('customMap', JSON.stringify(worldMap));
+            alert('Map saved!');
+        }
+        break;
+    case 'l':
+        if (EDITOR.active) {
+            const savedMap = localStorage.getItem('customMap');
+            if (savedMap) {
+                const loadedMap = JSON.parse(savedMap);
+                for(let y = 0; y < MAP_HEIGHT; y++) {
+                    for(let x = 0; x < MAP_WIDTH; x++) {
+                        worldMap[y][x] = loadedMap[y][x];
+                    }
+                }
+                alert('Map loaded!');
+            }
+        }
+        break;
     }
     }
 
@@ -460,25 +572,44 @@
     document.addEventListener('keyup', handleKeyUp);
     window.addEventListener('resize', handleResize);
 
-    const mouseSensitivity = 0.002;
-    let mouseEnabled = false;
+    canvas.addEventListener('mousedown', (e) => {
+        if (!EDITOR.active) return;
+        EDITOR.dragging = true;
+        handleEditorClick(e);
+    });
 
-    canvas.addEventListener('click', () => {
-    if (!mouseEnabled) {
-    canvas.requestPointerLock();
-    mouseEnabled = true;
+    canvas.addEventListener('mouseup', () => {
+        EDITOR.dragging = false;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!EDITOR.active) return;
+        EDITOR.mouseX = e.offsetX;
+        EDITOR.mouseY = e.offsetY;
+        if (EDITOR.dragging) handleEditorClick(e);
+    });
+
+    function handleEditorClick(e) {
+        if (e.offsetX > canvas.width - 100) return;
+        
+        const offsetX = (canvas.width - (MAP_WIDTH * EDITOR.gridSize)) / 2;
+        const offsetY = (canvas.height - (MAP_HEIGHT * EDITOR.gridSize)) / 2;
+        
+        const gridX = Math.floor((e.offsetX - offsetX) / EDITOR.gridSize);
+        const gridY = Math.floor((e.offsetY - offsetY) / EDITOR.gridSize);
+        
+        if (gridX < 0 || gridX >= MAP_WIDTH || gridY < 0 || gridY >= MAP_HEIGHT) return;
+        
+        for(let dy = -EDITOR.brushSize + 1; dy < EDITOR.brushSize; dy++) {
+            for(let dx = -EDITOR.brushSize + 1; dx < EDITOR.brushSize; dx++) {
+                const x = gridX + dx;
+                const y = gridY + dy;
+                if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT) {
+                    worldMap[y][x] = EDITOR.selectedTile;
+                }
+            }
+        }
     }
-    });
-
-    document.addEventListener('pointerlockchange', () => {
-    mouseEnabled = document.pointerLockElement === canvas;
-    });
-
-    document.addEventListener('mousemove', (e) => {
-    if (mouseEnabled) {
-    player.angle += e.movementX * mouseSensitivity;
-    }
-    });
 
     gameLoop();
 </script>
