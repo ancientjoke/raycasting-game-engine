@@ -106,7 +106,13 @@
         isPlacingEnemy: false,
         showHealthBar: true,
         showMinimap: true, 
-        enemiesPaused: false
+        enemiesPaused: false,
+        showDevTools: false,
+        fpsData: [],
+        lastFpsUpdate: 0,
+        cpuStartTime: 0,
+        cpuUsage: 0,
+        memoryUsage: 0
     };
 
     const enemies = [];
@@ -524,32 +530,55 @@
     }
 
     function renderEnemies(depthBuffer) {
-        enemies.forEach(enemy => {
-            const dx = enemy.x - player.x;
-            const dy = enemy.y - player.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
+    enemies.forEach(enemy => {
+        const dx = enemy.x - player.x;
+        const dy = enemy.y - player.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        const angle = Math.atan2(dy, dx);
+        const relativeAngle = (angle - player.angle + Math.PI * 2) % (Math.PI * 2);
+        
+        if (relativeAngle < FOV/2 || relativeAngle > Math.PI * 2 - FOV/2) {
+            const projectedHeight = (TILE_SIZE * DIST_TO_PROJ) / distance;
+            const screenX = Math.tan(relativeAngle) * DIST_TO_PROJ + canvas.width/2;
+            const screenY = (canvas.height - projectedHeight) / 2;
             
-            const angle = Math.atan2(dy, dx);
-            const relativeAngle = (angle - player.angle + Math.PI * 2) % (Math.PI * 2);
-            
-            if (relativeAngle < FOV/2 || relativeAngle > Math.PI * 2 - FOV/2) {
-                const projectedHeight = (TILE_SIZE * DIST_TO_PROJ) / distance;
-                const screenX = Math.tan(relativeAngle) * DIST_TO_PROJ + canvas.width/2;
-                const screenY = (canvas.height - projectedHeight) / 2;
+            if (distance < depthBuffer[Math.floor(screenX)]) {
+                const radius = projectedHeight * 0.5;
+                const gradient = ctx.createRadialGradient(
+                    screenX, screenY + radius,
+                    0,
+                    screenX, screenY + radius,
+                    radius
+                );
                 
-                if (distance < depthBuffer[Math.floor(screenX)]) {
-                    const width = projectedHeight * 0.6;
-                    ctx.fillStyle = '#ff0000';
-                    ctx.beginPath();
-                    ctx.moveTo(screenX, screenY);
-                    ctx.lineTo(screenX - width/2, screenY + projectedHeight);
-                    ctx.lineTo(screenX + width/2, screenY + projectedHeight);
-                    ctx.closePath();
-                    ctx.fill();
-                }
+                gradient.addColorStop(0, '#ff0000');   
+                gradient.addColorStop(0.3, '#cc0000');  
+                gradient.addColorStop(0.7, '#990000');  
+                gradient.addColorStop(1, '#660000');    
+                
+                ctx.beginPath();
+                ctx.fillStyle = gradient;
+                ctx.arc(screenX, screenY + radius, radius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                const highlightGradient = ctx.createRadialGradient(
+                    screenX - radius * 0.3, screenY + radius - radius * 0.3,
+                    0,
+                    screenX - radius * 0.3, screenY + radius - radius * 0.3,
+                    radius * 0.4
+                );
+                highlightGradient.addColorStop(0, 'rgba(255,255,255,0.4)');
+                highlightGradient.addColorStop(1, 'rgba(255,255,255,0)');
+                
+                ctx.beginPath();
+                ctx.fillStyle = highlightGradient;
+                ctx.arc(screenX - radius * 0.3, screenY + radius - radius * 0.3, radius * 0.4, 0, Math.PI * 2);
+                ctx.fill();
             }
-        });
-    }
+        }
+    });
+}
 
     function drawLevelDesigner() {
         const gridSizeX = canvas.width / MAP_WIDTH;
@@ -866,6 +895,36 @@
     return false;
     }
 
+    function drawDevTools() {
+        if (!EDITOR.showDevTools) return;
+
+        const currentTime = performance.now();
+        
+        const fps = 1000 / (currentTime - lastTime);
+        EDITOR.fpsData.push(fps);
+        if (EDITOR.fpsData.length > 60) EDITOR.fpsData.shift();
+        
+        if (currentTime - EDITOR.lastFpsUpdate > 1000) {
+            const avgFps = EDITOR.fpsData.reduce((a, b) => a + b, 0) / EDITOR.fpsData.length;
+            EDITOR.cpuUsage = Math.min(100, Math.round((1 - avgFps/60) * 100));
+            EDITOR.memoryUsage = Math.round(performance.memory?.usedJSHeapSize / 1048576) || 0;
+            EDITOR.lastFpsUpdate = currentTime;
+        }
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(canvas.width - 200, 0, 200, 100);
+        
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px Courier New';
+        ctx.textAlign = 'right';
+        
+        const currentFps = Math.round(EDITOR.fpsData[EDITOR.fpsData.length - 1]);
+        ctx.fillText(`FPS: ${currentFps}`, canvas.width - 10, 20);
+        ctx.fillText(`CPU: ${EDITOR.cpuUsage}%`, canvas.width - 10, 40);
+        ctx.fillText(`Memory: ${EDITOR.memoryUsage}MB`, canvas.width - 10, 60);
+        ctx.fillText(`Entities: ${enemies.length}`, canvas.width - 10, 80);
+    }
+
     let lastTime = performance.now();
 
     function gameLoop(currentTime) {
@@ -892,6 +951,11 @@
                     drawDeathScreen(currentTime);
                 }
             }
+            
+            if (EDITOR.showDevTools) {
+                drawDevTools();
+            }
+            
             lastTime = currentTime;
         }
         
@@ -963,8 +1027,10 @@
                         worldMap[y][x] = newMap[y][x];
                     }
                 }
-                player.x = startX * TILE_SIZE + TILE_SIZE/2;
-                player.y = startY * TILE_SIZE/2;
+                player.x = (startX + 0.5) * TILE_SIZE;
+                player.y = (startY + 0.5) * TILE_SIZE;
+                player.angle = 0; 
+                enemies.length = 0;
                 break;
             case 'tab':
                 e.preventDefault();
@@ -1052,6 +1118,11 @@
                 break;
             case ' ':
                 EDITOR.enemiesPaused = !EDITOR.enemiesPaused;
+                break;
+            case 'f3':
+                EDITOR.showDevTools = !EDITOR.showDevTools;
+                EDITOR.fpsData = [];
+                EDITOR.lastFpsUpdate = performance.now();
                 break;
         }
     }
