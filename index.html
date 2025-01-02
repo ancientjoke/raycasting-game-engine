@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        background-color: #000;
+        overflow: hidden;
+    }
+
+    canvas {
+        border: 1px solid #333;
+        image-rendering: pixelated;
+    }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    canvas.width = window.innerWidth * 0.8; // adjust window sizes to fit the game
+    canvas.height = window.innerHeight * 0.8; 
+
+    const TILE_SIZE = 64;
+    const MAP_WIDTH = 24;
+    const MAP_HEIGHT = 24;
+    const FOV = Math.PI / 2.5;
+    const HALF_FOV = FOV / 2;
+    const NUM_RAYS = canvas.width;
+    const MAX_DEPTH = 20;
+    const DELTA_ANGLE = FOV / NUM_RAYS;
+    const DIST_TO_PROJ = (canvas.width / 2) / Math.tan(HALF_FOV);
+    const SCALE = 1;
+    const PLAYER_SIZE = 8;
+    const PLAYER_SPEED = 4;
+    const ROTATION_SPEED = 0.04;
+
+    const FPS = 60;
+    const FRAME_TIME = 1000 / FPS;
+    const PRECALC_ANGLES = 360;
+    const sinTable = new Array(PRECALC_ANGLES);
+    const cosTable = new Array(PRECALC_ANGLES);
+
+    for (let i = 0; i < PRECALC_ANGLES; i++) {
+    const angle = (i * Math.PI * 2) / PRECALC_ANGLES;
+    sinTable[i] = Math.sin(angle);
+    cosTable[i] = Math.cos(angle);
+    }
+
+    const player = {
+    x: TILE_SIZE * 1.5,
+    y: TILE_SIZE * 1.5,
+    angle: 0,
+    speed: 0,
+    lateralSpeed: 0,
+    rotationSpeed: 0,
+    };
+
+    const keys = {
+    up: false,
+    down: false,
+    left: false,
+    right: false,
+    strafeLeft: false,
+    strafeRight: false
+    };
+
+    function generateMap() {
+    let map = Array(MAP_HEIGHT).fill().map(() => Array(MAP_WIDTH).fill(1));
+    const rooms = [];
+    const maxRooms = 15;
+    const minRoomSize = 3;
+    const maxRoomSize = 8;
+
+    for (let i = 0; i < maxRooms; i++) {
+    const roomWidth = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
+    const roomHeight = Math.floor(Math.random() * (maxRoomSize - minRoomSize + 1)) + minRoomSize;
+    const x = Math.floor(Math.random() * (MAP_WIDTH - roomWidth - 2)) + 1;
+    const y = Math.floor(Math.random() * (MAP_HEIGHT - roomHeight - 2)) + 1;
+
+    const newRoom = {x, y, width: roomWidth, height: roomHeight};
+
+    let failed = false;
+    for (const otherRoom of rooms) {
+        if (checkRoomOverlap(newRoom, otherRoom)) {
+            failed = true;
+            break;
+        }
+    }
+
+    if (!failed) {
+        carveRoom(map, newRoom);
+        if (rooms.length > 0) {
+            const [newX, newY] = getRoomCenter(newRoom);
+            const [prevX, prevY] = getRoomCenter(rooms[rooms.length - 1]);
+            carveCorridor(map, prevX, prevY, newX, newY);
+        }
+        rooms.push(newRoom);
+    }
+    }
+
+    for (let y = 0; y < MAP_HEIGHT; y++) {
+    map[y][0] = 1;
+    map[y][MAP_WIDTH - 1] = 1;
+    }
+    for (let x = 0; x < MAP_WIDTH; x++) {
+    map[0][x] = 1;
+    map[MAP_HEIGHT - 1][x] = 1;
+    }
+
+    const startRoom = rooms[0];
+    const [startX, startY] = getRoomCenter(startRoom);
+    map[startY][startX] = 0;
+    map[startY + 1][startX] = 0;
+    map[startY][startX + 1] = 0;
+    map[startY + 1][startX + 1] = 0;
+
+    return {map, startX, startY};
+    }
+
+    function checkRoomOverlap(room1, room2) {
+    return !(room1.x + room1.width + 2 < room2.x || 
+            room2.x + room2.width + 2 < room1.x || 
+            room1.y + room1.height + 2 < room2.y || 
+            room2.y + room2.height + 2 < room1.y);
+    }
+
+    function carveRoom(map, room) {
+    for (let y = room.y; y < room.y + room.height; y++) {
+    for (let x = room.x; x < room.x + room.width; x++) {
+        map[y][x] = 0;
+    }
+    }
+    }
+
+    function getRoomCenter(room) {
+    const centerX = Math.floor(room.x + room.width / 2);
+    const centerY = Math.floor(room.y + room.height / 2);
+    return [centerX, centerY];
+    }
+
+    function carveCorridor(map, x1, y1, x2, y2) {
+    let x = x1, y = y1;
+
+    while (x !== x2 || y !== y2) {
+    if (Math.random() < 0.5) {
+        if (x < x2) x++;
+        else if (x > x2) x--;
+        else if (y < y2) y++;
+        else if (y > y2) y--;
+    } else {
+        if (y < y2) y++;
+        else if (y > y2) y--;
+        else if (x < x2) x++;
+        else if (x > x2) x--;
+    }
+    map[y][x] = 0;
+    map[y][Math.min(x + 1, MAP_WIDTH - 2)] = 0;
+    map[Math.min(y + 1, MAP_HEIGHT - 2)][x] = 0;
+    }
+    }
+
+    const {map: worldMap, startX, startY} = generateMap();
+    player.x = startX * TILE_SIZE + TILE_SIZE / 2;
+    player.y = startY * TILE_SIZE + TILE_SIZE / 2;
+
+    const textureWidth = 64;
+    const textureHeight = 64;
+
+    const wallTexture = new Array(textureWidth * textureHeight);
+    for(let i = 0; i < wallTexture.length; i++) {
+    const x = i % textureWidth;
+    const y = Math.floor(i / textureWidth);
+    const pattern = (x ^ y) & 63;
+    wallTexture[i] = `rgb(${pattern * 4},${pattern * 4},${pattern * 4})`;
+    }
+
+    function raycast() {
+    const depthBuffer = new Array(NUM_RAYS);
+
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height/2);
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
+
+    let rayAngle = player.angle - HALF_FOV + 0.0001;
+
+    for (let ray = 0; ray < NUM_RAYS; ray++) {
+    rayAngle = (rayAngle + Math.PI * 2) % (Math.PI * 2);
+    const angleIndex = Math.floor(rayAngle / (Math.PI * 2) * PRECALC_ANGLES) % PRECALC_ANGLES;
+    const sinA = sinTable[angleIndex];
+    const cosA = cosTable[angleIndex];
+
+    const [distHor, hitHor] = castHorizontal(rayAngle, sinA, cosA);
+    const [distVert, hitVert] = castVertical(rayAngle, sinA, cosA);
+
+    let finalDistance, shadingValue;
+
+    if (distVert < distHor) {
+        finalDistance = distVert;
+        shadingValue = hitVert ? 0.7 : 0;
+    } else {
+        finalDistance = distHor;
+        shadingValue = hitHor ? 1.0 : 0;
+    }
+
+    if (finalDistance === Infinity) continue;
+
+    depthBuffer[ray] = finalDistance;
+    const fixedAngle = player.angle - rayAngle;
+    finalDistance *= Math.cos(fixedAngle);
+
+    const wallHeight = Math.min((TILE_SIZE * DIST_TO_PROJ) / Math.max(finalDistance, 0.1), canvas.height * 1.5);
+    const wallTop = (canvas.height - wallHeight) / 2;
+
+    const brightness = Math.min(1.0, 1.0 / (finalDistance * 0.015)) * shadingValue;
+    if (brightness > 0) {
+        ctx.fillStyle = `rgba(120, 120, 120, ${brightness})`;
+        ctx.fillRect(ray, wallTop, SCALE, wallHeight);
+    }
+
+    rayAngle += DELTA_ANGLE;
+    }
+
+    return depthBuffer;
+    }
+
+    function castHorizontal(rayAngle, sinA, cosA) {
+    const nTan = -1/Math.tan(rayAngle);
+
+    let yHor, xHor, dyHor, dxHor;
+
+    if (rayAngle > Math.PI) {
+    yHor = Math.floor(player.y/TILE_SIZE) * TILE_SIZE - 0.0001;
+    xHor = (player.y - yHor) * nTan + player.x;
+    dyHor = -TILE_SIZE;
+    dxHor = -dyHor * nTan;
+    } else if (rayAngle < Math.PI) {
+    yHor = Math.floor(player.y/TILE_SIZE) * TILE_SIZE + TILE_SIZE;
+    xHor = (player.y - yHor) * nTan + player.x;
+    dyHor = TILE_SIZE;
+    dxHor = -dyHor * nTan;
+    } else {
+    return [Infinity, false];
+    }
+
+    let distHor = Infinity;
+    let hit = false;
+
+    for(let i = 0; i < MAX_DEPTH; i++) {
+    const mapX = Math.floor(xHor / TILE_SIZE);
+    const mapY = Math.floor(yHor / TILE_SIZE);
+
+    if (mapX >= 0 && mapX < MAP_WIDTH && mapY >= 0 && mapY < MAP_HEIGHT) {
+        if (worldMap[mapY][mapX] === 1) {
+            distHor = getDistance(player.x, player.y, xHor, yHor);
+            hit = true;
+            break;
+        }
+    } else break;
+
+    xHor += dxHor;
+    yHor += dyHor;
+    }
+
+    return [distHor, hit];
+    }
+
+    function castVertical(rayAngle, sinA, cosA) {
+    const aTan = -Math.tan(rayAngle);
+
+    let xVert, yVert, dxVert, dyVert;
+
+    if (rayAngle > Math.PI/2 && rayAngle < 3*Math.PI/2) {
+    xVert = Math.floor(player.x/TILE_SIZE) * TILE_SIZE - 0.0001;
+    yVert = (player.x - xVert) * aTan + player.y;
+    dxVert = -TILE_SIZE;
+    dyVert = -dxVert * aTan;
+    } else if (rayAngle < Math.PI/2 || rayAngle > 3*Math.PI/2) {
+    xVert = Math.floor(player.x/TILE_SIZE) * TILE_SIZE + TILE_SIZE;
+    yVert = (player.x - xVert) * aTan + player.y;
+    dxVert = TILE_SIZE;
+    dyVert = -dxVert * aTan;
+    } else {
+    return [Infinity, false];
+    }
+
+    let distVert = Infinity;
+    let hit = false;
+
+    for(let i = 0; i < MAX_DEPTH; i++) {
+    const mapX = Math.floor(xVert / TILE_SIZE);
+    const mapY = Math.floor(yVert / TILE_SIZE);
+
+    if (mapX >= 0 && mapX < MAP_WIDTH && mapY >= 0 && mapY < MAP_HEIGHT) {
+        if (worldMap[mapY][mapX] === 1) {
+            distVert = getDistance(player.x, player.y, xVert, yVert);
+            hit = true;
+            break;
+        }
+    } else break;
+
+    xVert += dxVert;
+    yVert += dyVert;
+    }
+
+    return [distVert, hit];
+    }
+
+    function getDistance(x1, y1, x2, y2) {
+    return Math.sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+    }
+
+    function drawMinimap(depthBuffer) {
+    const mmScale = 0.2;
+    const mmSize = TILE_SIZE * mmScale;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(0, 0, MAP_WIDTH * mmSize, MAP_HEIGHT * mmSize);
+
+    for(let y = 0; y < MAP_HEIGHT; y++) {
+    for(let x = 0; x < MAP_WIDTH; x++) {
+        if(worldMap[y][x] === 1) {
+            ctx.fillStyle = '#888';
+            ctx.fillRect(x * mmSize, y * mmSize, mmSize, mmSize);
+        }
+    }
+    }
+
+    ctx.fillStyle = '#ff0000';
+    ctx.beginPath();
+    ctx.arc(player.x * mmScale, player.y * mmScale, PLAYER_SIZE * mmScale, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(player.x * mmScale, player.y * mmScale);
+    ctx.lineTo(
+    (player.x + Math.cos(player.angle) * TILE_SIZE) * mmScale,
+    (player.y + Math.sin(player.angle) * TILE_SIZE) * mmScale
+    );
+    ctx.stroke();
+
+    if (depthBuffer) {
+    ctx.strokeStyle = '#0f0';
+    ctx.beginPath();
+    for(let ray = 0; ray < NUM_RAYS; ray += 50) {
+        const rayAngle = player.angle - HALF_FOV + ray * DELTA_ANGLE;
+        ctx.moveTo(player.x * mmScale, player.y * mmScale);
+        ctx.lineTo(
+            (player.x + Math.cos(rayAngle) * depthBuffer[ray]) * mmScale,
+            (player.y + Math.sin(rayAngle) * depthBuffer[ray]) * mmScale
+        );
+    }
+    ctx.stroke();
+    }
+    }
+
+    function update() {
+    if (player.speed !== 0 || player.lateralSpeed !== 0) {
+    const moveAngle = player.angle + (player.lateralSpeed !== 0 ? Math.PI/2 : 0);
+    const speed = player.lateralSpeed || player.speed;
+
+    const newX = player.x + Math.cos(moveAngle) * speed;
+    const newY = player.y + Math.sin(moveAngle) * speed;
+
+    const cellX = Math.floor(newX / TILE_SIZE);
+    const cellY = Math.floor(newY / TILE_SIZE);
+
+    const cellOffsetX = newX % TILE_SIZE;
+    const cellOffsetY = newY % TILE_SIZE;
+
+    const buffer = PLAYER_SIZE;
+
+    if (!checkCollision(cellX, cellY, cellOffsetX, cellOffsetY, buffer)) {
+        player.x = newX;
+        player.y = newY;
+    }
+    }
+
+    player.angle += player.rotationSpeed;
+    player.angle = player.angle % (Math.PI * 2);
+    }
+
+    function checkCollision(cellX, cellY, offsetX, offsetY, buffer) {
+    const corners = [
+    [cellX, cellY],
+    [cellX + (offsetX + buffer >= TILE_SIZE), cellY],
+    [cellX, cellY + (offsetY + buffer >= TILE_SIZE)],
+    [cellX + (offsetX + buffer >= TILE_SIZE), cellY + (offsetY + buffer >= TILE_SIZE)]
+    ];
+
+    for (let [x, y] of corners) {
+    if (x >= 0 && x < MAP_WIDTH && y >= 0 && y < MAP_HEIGHT && worldMap[y][x] === 1) {
+        return true;
+    }
+    }
+    return false;
+    }
+
+    let lastTime = performance.now();
+
+    function gameLoop(currentTime) {
+    const deltaTime = currentTime - lastTime;
+
+    if (deltaTime >= FRAME_TIME) {
+    updateMovement();
+    update();
+
+    const depthBuffer = raycast();
+    drawMinimap(depthBuffer);
+
+    lastTime = currentTime;
+    }
+
+    requestAnimationFrame(gameLoop);
+    }
+
+    function handleResize() {
+    canvas.width = window.innerWidth * 0.8;
+    canvas.height = window.innerHeight * 0.8;
+    ctx.imageSmoothingEnabled = false;
+    ctx.mozImageSmoothingEnabled = false;
+    ctx.webkitImageSmoothingEnabled = false;
+    ctx.msImageSmoothingEnabled = false;
+    }
+
+    function updateMovement() {
+    player.speed = 0;
+    player.lateralSpeed = 0;
+    player.rotationSpeed = 0;
+
+    if (keys.up) player.speed = PLAYER_SPEED;
+    if (keys.down) player.speed = -PLAYER_SPEED;
+    if (keys.strafeLeft) player.lateralSpeed = -PLAYER_SPEED;
+    if (keys.strafeRight) player.lateralSpeed = PLAYER_SPEED;
+    if (keys.left) player.rotationSpeed = -ROTATION_SPEED;
+    if (keys.right) player.rotationSpeed = ROTATION_SPEED;
+    }
+
+    function handleKeyDown(e) {
+    switch(e.key.toLowerCase()) {
+    case 'w': case 'arrowup': keys.up = true; break;
+    case 's': case 'arrowdown': keys.down = true; break;
+    case 'a': case 'arrowleft': keys.left = true; break;
+    case 'd': case 'arrowright': keys.right = true; break;
+    case 'q': keys.strafeLeft = true; break;
+    case 'e': keys.strafeRight = true; break;
+    case 'r': 
+        const {map: newMap, startX, startY} = generateMap();
+        for(let y = 0; y < MAP_HEIGHT; y++) {
+            for(let x = 0; x < MAP_WIDTH; x++) {
+                worldMap[y][x] = newMap[y][x];
+            }
+        }
+        player.x = startX * TILE_SIZE + TILE_SIZE/2;
+        player.y = startY * TILE_SIZE + TILE_SIZE/2;
+        break;
+    }
+    }
+
+    function handleKeyUp(e) {
+    switch(e.key.toLowerCase()) {
+    case 'w': case 'arrowup': keys.up = false; break;
+    case 's': case 'arrowdown': keys.down = false; break;
+    case 'a': case 'arrowleft': keys.left = false; break;
+    case 'd': case 'arrowright': keys.right = false; break;
+    case 'q': keys.strafeLeft = false; break;
+    case 'e': keys.strafeRight = false; break;
+    }
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('resize', handleResize);
+
+    const mouseSensitivity = 0.002;
+    let mouseEnabled = false;
+
+    canvas.addEventListener('click', () => {
+    if (!mouseEnabled) {
+    canvas.requestPointerLock();
+    mouseEnabled = true;
+    }
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+    mouseEnabled = document.pointerLockElement === canvas;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+    if (mouseEnabled) {
+    player.angle += e.movementX * mouseSensitivity;
+    }
+    });
+
+    gameLoop();
+</script>
+</body>
+</html>
