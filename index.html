@@ -171,64 +171,42 @@
     player.x = startX * TILE_SIZE + TILE_SIZE / 2;
     player.y = startY * TILE_SIZE + TILE_SIZE / 2;
 
-    const textureWidth = 64;
-    const textureHeight = 64;
-
-    const wallTexture = new Array(textureWidth * textureHeight);
-    for(let i = 0; i < wallTexture.length; i++) {
-    const x = i % textureWidth;
-    const y = Math.floor(i / textureWidth);
-    const pattern = (x ^ y) & 63;
-    wallTexture[i] = `rgb(${pattern * 4},${pattern * 4},${pattern * 4})`;
-    }
-
     function raycast() {
     const depthBuffer = new Array(NUM_RAYS);
-
+    
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, canvas.width, canvas.height/2);
     ctx.fillStyle = '#333';
-    ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
-
+    ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height);
+    
     let rayAngle = player.angle - HALF_FOV + 0.0001;
-
+    
     for (let ray = 0; ray < NUM_RAYS; ray++) {
-    rayAngle = (rayAngle + Math.PI * 2) % (Math.PI * 2);
-    const angleIndex = Math.floor(rayAngle / (Math.PI * 2) * PRECALC_ANGLES) % PRECALC_ANGLES;
-    const sinA = sinTable[angleIndex];
-    const cosA = cosTable[angleIndex];
-
-    const [distHor, hitHor] = castHorizontal(rayAngle, sinA, cosA);
-    const [distVert, hitVert] = castVertical(rayAngle, sinA, cosA);
-
-    let finalDistance, shadingValue;
-
-    if (distVert < distHor) {
-        finalDistance = distVert;
-        shadingValue = hitVert ? 0.7 : 0;
-    } else {
-        finalDistance = distHor;
-        shadingValue = hitHor ? 1.0 : 0;
-    }
-
-    if (finalDistance === Infinity) continue;
-
-    depthBuffer[ray] = finalDistance;
-    const fixedAngle = player.angle - rayAngle;
-    finalDistance *= Math.cos(fixedAngle);
-
-    const wallHeight = Math.min((TILE_SIZE * DIST_TO_PROJ) / Math.max(finalDistance, 0.1), canvas.height * 1.5);
-    const wallTop = (canvas.height - wallHeight) / 2;
-
-    const brightness = Math.min(1.0, 1.0 / (finalDistance * 0.015)) * shadingValue;
-    if (brightness > 0) {
-        ctx.fillStyle = `rgba(120, 120, 120, ${brightness})`;
+        rayAngle = (rayAngle + Math.PI * 2) % (Math.PI * 2);
+        const angleIndex = Math.floor(rayAngle / (Math.PI * 2) * PRECALC_ANGLES) % PRECALC_ANGLES;
+        const sinA = sinTable[angleIndex];
+        const cosA = cosTable[angleIndex];
+        
+        const [distHor] = castHorizontal(rayAngle);
+        const [distVert] = castVertical(rayAngle);
+        
+        let finalDistance = Math.min(distHor, distVert);
+        
+        if (finalDistance === Infinity) continue;
+        
+        depthBuffer[ray] = finalDistance;
+        const fixedAngle = player.angle - rayAngle;
+        finalDistance *= Math.cos(fixedAngle);
+        
+        const wallHeight = Math.min((TILE_SIZE * DIST_TO_PROJ) / Math.max(finalDistance, 0.1), canvas.height);
+        const wallTop = (canvas.height - wallHeight) / 2;
+        
+        ctx.fillStyle = '#4a4a4a';
         ctx.fillRect(ray, wallTop, SCALE, wallHeight);
+        
+        rayAngle += DELTA_ANGLE;
     }
-
-    rayAngle += DELTA_ANGLE;
-    }
-
+    
     return depthBuffer;
     }
 
