@@ -73,6 +73,14 @@
         wallColor: '#4a4a4a'
     };
 
+    const SWORD = {
+        damage: 50,
+        range: TILE_SIZE * 1.5,
+        swingTime: 300,
+        cooldown: 500,
+        knockback: 32
+    };
+
     for (let i = 0; i < PRECALC_ANGLES; i++) {
     const angle = (i * Math.PI * 2) / PRECALC_ANGLES;
     sinTable[i] = Math.sin(angle);
@@ -90,7 +98,10 @@
     lastDamageTime: 0,
     godMode: true,
     isDead: false,
-    deathAnimationStart: 0
+    deathAnimationStart: 0,
+    lastAttackTime: 0,
+    isAttacking: false,
+    attackProgress: 0
     };
 
     const keys = {
@@ -1002,6 +1013,83 @@
 
     let lastTime = performance.now();
 
+    function handleSwordAttack(currentTime) {
+        if (player.isAttacking) {
+            const attackElapsed = currentTime - player.lastAttackTime;
+            player.attackProgress = Math.min(1, attackElapsed / SWORD.swingTime);
+            
+            if (player.attackProgress >= 1) {
+                player.isAttacking = false;
+            }
+            
+            // Check for hits during attack animation
+            if (player.attackProgress > 0.2 && player.attackProgress < 0.7) {
+                enemies.forEach((enemy, index) => {
+                    const dx = enemy.x - player.x;
+                    const dy = enemy.y - player.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance <= SWORD.range) {
+                        const angleToEnemy = Math.atan2(dy, dx);
+                        const relativeDelta = Math.abs(normalizeAngle(angleToEnemy - player.angle));
+                        
+                        if (relativeDelta < Math.PI / 3) {
+                            // Apply knockback
+                            const knockbackX = Math.cos(angleToEnemy) * SWORD.knockback;
+                            const knockbackY = Math.sin(angleToEnemy) * SWORD.knockback;
+                            enemy.x += knockbackX;
+                            enemy.y += knockbackY;
+                            
+                            // Remove enemy if hit
+                            enemies.splice(index, 1);
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    function normalizeAngle(angle) {
+        while (angle < -Math.PI) angle += Math.PI * 2;
+        while (angle > Math.PI) angle -= Math.PI * 2;
+        return angle;
+    }
+
+    function drawSword(currentTime) {
+        if (!player.isAttacking) return;
+        
+        const width = canvas.width * 0.4;
+        const height = canvas.height * 0.4;
+        const baseX = canvas.width * 0.7;
+        const baseY = canvas.height * 0.6;
+        
+        const progress = player.attackProgress;
+        const swingAngle = Math.PI * 0.8 * Math.sin(progress * Math.PI);
+        
+        ctx.save();
+        ctx.translate(baseX, baseY);
+        ctx.rotate(swingAngle);
+        
+        // Draw sword
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(width * 0.7, -height * 0.1);
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#cccccc';
+        ctx.lineWidth = 8;
+        ctx.stroke();
+        
+        // Draw handle
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(-width * 0.1, 0);
+        ctx.strokeStyle = '#8b4513';
+        ctx.lineWidth = 12;
+        ctx.stroke();
+        
+        ctx.restore();
+    }
+
     function gameLoop(currentTime) {
         const deltaTime = currentTime - lastTime;
         
@@ -1013,10 +1101,14 @@
                     updateMovement();
                     update();
                     updateEnemies(currentTime);
+                    handleSwordAttack(currentTime);
                 }
                 
                 const depthBuffer = raycast();
                 renderEnemies(depthBuffer);
+                if (!player.isDead) {
+                    drawSword(currentTime);
+                }
                 if (EDITOR.showMinimap) {
                     drawMinimap(depthBuffer);
                 }
@@ -1192,7 +1284,11 @@
                 EDITOR.showMinimap = !EDITOR.showMinimap;
                 break;
             case ' ':
-                EDITOR.enemiesPaused = !EDITOR.enemiesPaused;
+                const currentTime = performance.now();
+                if (!player.isAttacking && currentTime - player.lastAttackTime > SWORD.cooldown) {
+                    player.isAttacking = true;
+                    player.lastAttackTime = currentTime;
+                }
                 break;
             case 'f3':
                 EDITOR.showDevTools = !EDITOR.showDevTools;
