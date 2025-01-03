@@ -73,12 +73,18 @@
         wallColor: '#4a4a4a'
     };
 
-    const SWORD = {
-        damage: 50,
-        range: TILE_SIZE * 1.5,
-        swingTime: 300,
-        cooldown: 500,
-        knockback: 32
+    const PLAYER_ITEM = {
+        projectile: {
+            speed: 15,
+            size: 8,
+            maxRange: TILE_SIZE * 20,
+            damage: 100,
+            cooldown: 250,
+            color: '#ffff00',
+            glow: '#ffff88'
+        },
+        shooting: false,
+        lastShootTime: 0
     };
 
     for (let i = 0; i < PRECALC_ANGLES; i++) {
@@ -101,7 +107,11 @@
     deathAnimationStart: 0,
     lastAttackTime: 0,
     isAttacking: false,
-    attackProgress: 0
+    attackProgress: 0,
+    projectiles: [],
+    lastShootTime: 0,
+    shootCooldown: 250,
+    currentWeapon: 'projectile'
     };
 
     const keys = {
@@ -1013,81 +1023,94 @@
 
     let lastTime = performance.now();
 
-    function handleSwordAttack(currentTime) {
-        if (player.isAttacking) {
-            const attackElapsed = currentTime - player.lastAttackTime;
-            player.attackProgress = Math.min(1, attackElapsed / SWORD.swingTime);
+    function createProjectile() {
+        return {
+            x: player.x,
+            y: player.y,
+            angle: player.angle,
+            distanceTraveled: 0
+        };
+    }
+
+    function updateProjectiles() {
+        for (let i = player.projectiles.length - 1; i >= 0; i--) {
+            const proj = player.projectiles[i];
+            const moveX = Math.cos(proj.angle) * PLAYER_ITEM.projectile.speed;
+            const moveY = Math.sin(proj.angle) * PLAYER_ITEM.projectile.speed;
             
-            if (player.attackProgress >= 1) {
-                player.isAttacking = false;
+            proj.x += moveX;
+            proj.y += moveY;
+            proj.distanceTraveled += PLAYER_ITEM.projectile.speed;
+
+            // Check wall collision
+            const mapX = Math.floor(proj.x / TILE_SIZE);
+            const mapY = Math.floor(proj.y / TILE_SIZE);
+            if (mapX < 0 || mapX >= MAP_WIDTH || mapY < 0 || mapY >= MAP_HEIGHT || 
+                worldMap[mapY][mapX] === 1 || proj.distanceTraveled > PLAYER_ITEM.projectile.maxRange) {
+                player.projectiles.splice(i, 1);
+                continue;
             }
-            
-            // Check for hits during attack animation
-            if (player.attackProgress > 0.2 && player.attackProgress < 0.7) {
-                enemies.forEach((enemy, index) => {
-                    const dx = enemy.x - player.x;
-                    const dy = enemy.y - player.y;
-                    const distance = Math.sqrt(dx * dx + dy * dy);
-                    
-                    if (distance <= SWORD.range) {
-                        const angleToEnemy = Math.atan2(dy, dx);
-                        const relativeDelta = Math.abs(normalizeAngle(angleToEnemy - player.angle));
-                        
-                        if (relativeDelta < Math.PI / 3) {
-                            // Apply knockback
-                            const knockbackX = Math.cos(angleToEnemy) * SWORD.knockback;
-                            const knockbackY = Math.sin(angleToEnemy) * SWORD.knockback;
-                            enemy.x += knockbackX;
-                            enemy.y += knockbackY;
-                            
-                            // Remove enemy if hit
-                            enemies.splice(index, 1);
-                        }
-                    }
-                });
+
+            // Check enemy collisions
+            for (let j = enemies.length - 1; j >= 0; j--) {
+                const enemy = enemies[j];
+                const dx = enemy.x - proj.x;
+                const dy = enemy.y - proj.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < ENEMY_SIZE / 2) {
+                    enemies.splice(j, 1);
+                    player.projectiles.splice(i, 1);
+                    break;
+                }
             }
         }
     }
 
-    function normalizeAngle(angle) {
-        while (angle < -Math.PI) angle += Math.PI * 2;
-        while (angle > Math.PI) angle -= Math.PI * 2;
-        return angle;
+    function drawProjectiles(depthBuffer) {
+        player.projectiles.forEach(proj => {
+            const dx = proj.x - player.x;
+            const dy = proj.y - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            const angle = Math.atan2(dy, dx);
+            const relativeAngle = (angle - player.angle + Math.PI * 2) % (Math.PI * 2);
+            
+            if (relativeAngle < FOV/2 || relativeAngle > Math.PI * 2 - FOV/2) {
+                const projectedHeight = (TILE_SIZE * DIST_TO_PROJ) / distance;
+                const screenX = Math.tan(relativeAngle) * DIST_TO_PROJ + canvas.width/2;
+                const screenY = canvas.height/2;
+                
+                if (distance < depthBuffer[Math.floor(screenX)]) {
+                    // Draw glow
+                    const glowRadius = Math.max(6, PLAYER_ITEM.projectile.size * (TILE_SIZE / distance) * 2);
+                    const gradient = ctx.createRadialGradient(
+                        screenX, screenY, 0,
+                        screenX, screenY, glowRadius
+                    );
+                    gradient.addColorStop(0, PLAYER_ITEM.projectile.glow);
+                    gradient.addColorStop(1, 'rgba(255,255,0,0)');
+                    ctx.fillStyle = gradient;
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, glowRadius, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Draw projectile
+                    const size = Math.max(2, PLAYER_ITEM.projectile.size * (TILE_SIZE / distance));
+                    ctx.fillStyle = PLAYER_ITEM.projectile.color;
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, size, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        });
     }
 
-    function drawSword(currentTime) {
-        if (!player.isAttacking) return;
+    function shootProjectile() {
+        const currentTime = performance.now();
+        if (currentTime - PLAYER_ITEM.lastShootTime < PLAYER_ITEM.projectile.cooldown) return;
         
-        const width = canvas.width * 0.4;
-        const height = canvas.height * 0.4;
-        const baseX = canvas.width * 0.7;
-        const baseY = canvas.height * 0.6;
-        
-        const progress = player.attackProgress;
-        const swingAngle = Math.PI * 0.8 * Math.sin(progress * Math.PI);
-        
-        ctx.save();
-        ctx.translate(baseX, baseY);
-        ctx.rotate(swingAngle);
-        
-        // Draw sword
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(width * 0.7, -height * 0.1);
-        ctx.lineCap = 'round';
-        ctx.strokeStyle = '#cccccc';
-        ctx.lineWidth = 8;
-        ctx.stroke();
-        
-        // Draw handle
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.lineTo(-width * 0.1, 0);
-        ctx.strokeStyle = '#8b4513';
-        ctx.lineWidth = 12;
-        ctx.stroke();
-        
-        ctx.restore();
+        player.projectiles.push(createProjectile());
+        PLAYER_ITEM.lastShootTime = currentTime;
     }
 
     function gameLoop(currentTime) {
@@ -1100,15 +1123,13 @@
                 if (!player.isDead) {
                     updateMovement();
                     update();
+                    updateProjectiles();
                     updateEnemies(currentTime);
-                    handleSwordAttack(currentTime);
                 }
                 
                 const depthBuffer = raycast();
                 renderEnemies(depthBuffer);
-                if (!player.isDead) {
-                    drawSword(currentTime);
-                }
+                drawProjectiles(depthBuffer);
                 if (EDITOR.showMinimap) {
                     drawMinimap(depthBuffer);
                 }
@@ -1284,10 +1305,8 @@
                 EDITOR.showMinimap = !EDITOR.showMinimap;
                 break;
             case ' ':
-                const currentTime = performance.now();
-                if (!player.isAttacking && currentTime - player.lastAttackTime > SWORD.cooldown) {
-                    player.isAttacking = true;
-                    player.lastAttackTime = currentTime;
+                if (!EDITOR.active && !player.isDead) {
+                    shootProjectile();
                 }
                 break;
             case 'f3':
