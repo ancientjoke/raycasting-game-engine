@@ -1,4 +1,6 @@
 # Raycasting Game Engine
+![image](https://github.com/user-attachments/assets/b3d3b4e3-5054-4f3d-96b9-97e94ce71303)
+
 ## Movement Controls
 - `W` or `↑` - Move forward
 - `S` or `↓` - Move backward
