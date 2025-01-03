@@ -9,11 +9,14 @@
 - `Q` - Strafe left
 - `E` - Strafe right
 
-## Game Controls
-- `R` - Generate new map
+## Combat Controls
+- `SPACE` - Shoot projectile
 - `G` - Toggle God Mode
+
+## General Controls
+- `R` - Generate new map / Restart after death
 - `M` - Toggle Minimap
-- `SPACE` - Pause Enemy Movement
+- `F3` - Toggle Dev Tools (FPS, CPU, Memory, Entity Counter)
 
 ## Level Editor Controls
 - `TAB` - Toggle Level Editor
@@ -25,5 +28,3 @@
 - `S` - Save Map
 - `L` - Load Map
 - `DELETE` - Remove Enemy (when hovering over one)
-
-- Press `R` to restart after death
