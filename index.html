@@ -1530,15 +1530,12 @@
             const x = e.clientX - rect.left;
             const y = e.clientY - rect.top + toolbar.scrollTop;
             
-            // Adjust all your toolbar click handlers to use these coordinates
-            // ...rest of click handling code...
         }
         if (e.offsetX > canvas.width - 100) {
             const toolbarX = canvas.width - 90;
             const y = e.offsetY;
             const x = e.offsetX - toolbarX;
 
-            // Handle map size controls
             if (y >= 640 && y < 665) {
                 if (x >= 10 && x < 35 && EDITOR.mapScale > EDITOR.minMapScale) {
                     EDITOR.mapScale = Math.max(EDITOR.minMapScale, EDITOR.mapScale - EDITOR.mapScaleStep);
@@ -1549,12 +1546,10 @@
                 }
             }
             
-            // Handle grid toggle
             if (y >= 670 && y < 690 && x >= 10 && x < 70) {
                 EDITOR.showGrid = !EDITOR.showGrid;
             }
 
-            // Add mouse controls toggle handler
             if (y >= 700 && y < 720 && x >= 10 && x < 70) {
                 EDITOR.mouseControls = !EDITOR.mouseControls;
                 if (!EDITOR.mouseControls) {
@@ -1563,7 +1558,6 @@
                 return;
             }
 
-            // Add speed control handler
             if (y > 775 && y < 780 && x >= 10 && x <= 70) {
                 const clickX = x - 10;
                 const speedPercent = clickX / 60;
@@ -1572,7 +1566,6 @@
                 return;
             }
 
-            // ...existing toolbar handlers...
             if (y >= 340 && y < 370) {
                 const input = document.createElement('input');
                 input.type = 'color';
@@ -1657,13 +1650,11 @@
 
     function handleMapScaleChange() {
         const newSize = getScaledMapSize();
-        const oldMap = [...worldMap.map(row => [...row])];  // Deep copy old map
-        const scaleRatio = newSize.width / MAP_WIDTH;  // Calculate scale ratio
+        const oldMap = [...worldMap.map(row => [...row])];  
+        const scaleRatio = newSize.width / MAP_WIDTH; 
         
-        // Create new map with scaled dimensions
         const newMap = Array(newSize.height).fill().map(() => Array(newSize.width).fill(1));
         
-        // Copy existing map data with scaling
         for (let y = 0; y < newSize.height; y++) {
             for (let x = 0; x < newSize.width; x++) {
                 const oldX = Math.floor(x / scaleRatio);
@@ -1674,24 +1665,19 @@
             }
         }
         
-        // Update map dimensions
         MAP_WIDTH = newSize.width;
         MAP_HEIGHT = newSize.height;
         
-        // Update world map
         worldMap = newMap;
         
-        // Scale enemy positions
         enemies.forEach(enemy => {
             enemy.x = (enemy.x / TILE_SIZE) * scaleRatio * TILE_SIZE;
             enemy.y = (enemy.y / TILE_SIZE) * scaleRatio * TILE_SIZE;
         });
         
-        // Scale player position
         player.x = (player.x / TILE_SIZE) * scaleRatio * TILE_SIZE;
         player.y = (player.y / TILE_SIZE) * scaleRatio * TILE_SIZE;
         
-        // Update grid size
         EDITOR.gridSize = Math.min(
             (canvas.width - 200) / MAP_WIDTH,
             canvas.height / MAP_HEIGHT
@@ -1706,14 +1692,12 @@
         }
     });
 
-    // Add new mouse movement handler function
     function handleMouseMove(e) {
         if (!EDITOR.active && EDITOR.mouseControls) {
             player.angle += e.movementX * MOUSE_SENSITIVITY;
         }
     }
 
-    // Update canvas click handler
     canvas.addEventListener('click', () => {
         if (!EDITOR.active && EDITOR.mouseControls) {
             canvas.requestPointerLock();
